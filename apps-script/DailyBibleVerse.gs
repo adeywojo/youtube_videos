@@ -315,20 +315,29 @@ function buildTitle_(hook, verseRef) {
 
 // ---- Claude: titles, descriptions and the prayer script ----
 
+// Rotating styles for the spoken opening line of the pilot Short (v2).
+const HOOK_STYLES = [
+  "a short question that names a real struggle (example: 'Feeling like giving up today?')",
+  "'Read this if ...' naming who needs it (example: 'Read this if you feel forgotten')",
+  "'God wants you to know ...' (example: 'God wants you to know you are not alone')",
+  "a bold, plain-English promise drawn from the verse (example: 'He is not done with you yet')",
+];
+
 const CAPTIONS_SCHEMA = {
   type: "object",
   properties: {
+    hook: { type: "string" },
     title_hook: { type: "string" },
     description: { type: "string" },
     prayer_lines: { type: "array", items: { type: "string" } },
     prayer_title_hook: { type: "string" },
     prayer_description: { type: "string" },
   },
-  required: ["title_hook", "description", "prayer_lines", "prayer_title_hook", "prayer_description"],
+  required: ["hook", "title_hook", "description", "prayer_lines", "prayer_title_hook", "prayer_description"],
   additionalProperties: false,
 };
 
-function buildCaptionsPrompt_(dow, theme, verseRef, verseText) {
+function buildCaptionsPrompt_(dow, theme, verseRef, verseText, hookStyle) {
   return (
     "You are a Christian content writer for a Daily Bible Verse YouTube channel.\n\n" +
     "Inputs:\n" +
@@ -336,6 +345,13 @@ function buildCaptionsPrompt_(dow, theme, verseRef, verseText) {
     "- Theme: " + theme + "\n" +
     "- Verse Reference: " + verseRef + "\n" +
     "- Verse Text: " + verseText + "\n\n" +
+    "Task 0 - Opening line (hook) for a YouTube Short:\n" +
+    "- hook: 4 to 8 words. It is shown in big letters and spoken in the first second, " +
+    "before the verse, to stop someone scrolling.\n" +
+    "- Style: " + hookStyle + "\n" +
+    "- Speak directly to the viewer's real need that this verse answers. Warm and honest, " +
+    "not clickbait, no exaggerated claims.\n" +
+    "- No verse reference, no book names, no numbers, no 'thee/thou', no emojis.\n\n" +
     "Task 1 - YouTube Short title and description:\n" +
     "- title_hook: 3 to 8 words, inspiring and concise. Do NOT include the verse reference, " +
     "book name, or any numbers; the reference is added automatically.\n" +
@@ -398,8 +414,8 @@ function callClaudeForCaptions_(prompt) {
 }
 
 // Generates captions, regenerating if the AI wrote a wrong Bible reference.
-function generateCaptions_(dow, theme, verseRef, verseText) {
-  const prompt = buildCaptionsPrompt_(dow, theme, verseRef, verseText);
+function generateCaptions_(dow, theme, verseRef, verseText, hookStyle) {
+  const prompt = buildCaptionsPrompt_(dow, theme, verseRef, verseText, hookStyle || HOOK_STYLES[0]);
   let lastProblem = "";
   for (let attempt = 1; attempt <= 3; attempt++) {
     const c = callClaudeForCaptions_(prompt);
@@ -408,7 +424,7 @@ function generateCaptions_(dow, theme, verseRef, verseText) {
       continue;
     }
     const wrong = findWrongReferences_(
-      [c.title_hook, c.description, c.prayer_title_hook, c.prayer_description,
+      [c.hook, c.title_hook, c.description, c.prayer_title_hook, c.prayer_description,
         c.prayer_lines.join(" ")].join("\n"),
       verseRef
     );
@@ -424,11 +440,17 @@ function generateCaptions_(dow, theme, verseRef, verseText) {
 }
 
 // ============================================================
-// Web app entry point (protected by WEBAPP_TOKEN)
-// Call as: <web app URL>?token=<WEBAPP_TOKEN>
+// Web app entry points
+//   GET  ?token=<WEBAPP_TOKEN>              run the verse job (e.g. from Make)
+//   GET  ?action=approve|reject&id=<code>    approval links from the pilot email
+//   POST (JSON from GitHub Actions)          "pilot Short is ready" notice
 // ============================================================
 
 function doGet(e) {
+  const params = (e && e.parameter) || {};
+  if (params.action === "approve" || params.action === "reject") {
+    return handleApprovalLink_(params);
+  }
   const expected = PropertiesService.getScriptProperties().getProperty("WEBAPP_TOKEN");
   const given = e && e.parameter ? e.parameter.token : "";
   if (!expected || given !== expected) {
@@ -439,6 +461,40 @@ function doGet(e) {
   } catch (err) {
     return jsonOutput_({ error: true, message: err.message });
   }
+}
+
+// GitHub Actions posts here when a job finishes. Only the pilot's
+// "ready for approval" notice is acted on; it must carry the one-time code
+// this script created when it started that render.
+function doPost(e) {
+  let body = {};
+  try { body = JSON.parse((e && e.postData && e.postData.contents) || "{}"); } catch (err) { /* ignore */ }
+  if (body.kind !== "verse_short_v2_ready") return jsonOutput_({ ok: true, ignored: true });
+
+  const props = PropertiesService.getScriptProperties();
+  const cbKey = "v2cb_" + String(body.callback_code || "");
+  if (!body.callback_code || !props.getProperty(cbKey)) {
+    return jsonOutput_({ ok: false, message: "Unknown callback code" });
+  }
+  props.deleteProperty(cbKey);
+  cleanupPilotRecords_();
+
+  const approveId = Utilities.getUuid();
+  const record = {
+    youtube_id: String(body.youtube_id || ""),
+    video_url: String(body.video_url || ""),
+    title: String(body.title || ""),
+    description: String(body.description || ""),
+    verse_ref: String(body.verse_ref || ""),
+    hook: String(body.hook || ""),
+    template: String(body.template || ""),
+    run_url: String(body.run_url || ""),
+    status: "pending",
+    created: Date.now(),
+  };
+  props.setProperty("v2ap_" + approveId, JSON.stringify(record));
+  sendApprovalEmail_(approveId, record);
+  return jsonOutput_({ ok: true });
 }
 
 // ============================================================
@@ -528,7 +584,9 @@ function run(options) {
     "/" + CLOUDINARY_BG;
 
   // --- 5. Titles, descriptions and prayer script ---
-  const captions = generateCaptions_(t.dow, theme, picked.ref, cleanedVerseText);
+  const hookStyle = HOOK_STYLES[t.daysSinceStart % HOOK_STYLES.length];
+  const captions = generateCaptions_(t.dow, theme, picked.ref, cleanedVerseText, hookStyle);
+  const hook = cleanText_(captions.hook).replace(/[|]+/g, "-");
   const title = buildTitle_(captions.title_hook, picked.ref);
   const description = picked.ref + " (" + VERSE_TRANSLATION_LABEL + ")\n\n" + captions.description.trim();
   const prayerTitle = buildTitle_(captions.prayer_title_hook, picked.ref);
@@ -549,6 +607,8 @@ function run(options) {
     youtube_error: "",
     ok: true,
     dry_run: dryRun,
+    hook: hook,
+    pilot_v2: "off",
     prayer_lines: captions.prayer_lines,
     prayer_title: prayerTitle,
     prayer_description: prayerDescription,
@@ -586,6 +646,21 @@ function run(options) {
     result.youtube_url = "pending";
   } else {
     result.youtube_error = "GitHub trigger failed: " + gh.status + " " + gh.body;
+  }
+
+  // --- 7b. Pilot: new-format Short, uploaded PRIVATE until you approve ---
+  // Turn on with Script Property PILOT_V2_ENABLED = true
+  if (PropertiesService.getScriptProperties().getProperty("PILOT_V2_ENABLED") === "true") {
+    result.pilot_v2 = startPilotRender_({
+      verse_ref: picked.ref,
+      verse_text: cleanedVerseText,
+      translation: VERSE_TRANSLATION_LABEL,
+      theme: theme,
+      hook: hook,
+      youtube_title: buildTitle_(hook, picked.ref),
+      youtube_description: description,
+      day_index: t.daysSinceStart,
+    });
   }
 
   // --- 8. Save prayer data for triggerPrayerVideo() ---
@@ -806,4 +881,162 @@ function triggerBibleReadingVideo() {
     throw new Error("GitHub trigger failed: " + gh.status + " " + gh.body);
   }
   Logger.log("Bible reading video workflow triggered for Day " + day);
+}
+
+// ============================================================
+// Pilot: Verse Short v2 approval loop
+//
+// 1. run() starts a render in GitHub Actions (event create_verse_short_v2)
+//    with a one-time callback code.
+// 2. GitHub uploads the Short to YouTube as PRIVATE and POSTs back (doPost).
+// 3. This script emails you a preview with Approve / Reject links.
+// 4. Approve dispatches publish_verse_short_v2: YouTube public, then
+//    Instagram and Facebook. Reject (or doing nothing) leaves it private.
+//
+// Script Properties used: PILOT_V2_ENABLED ("true" to turn on),
+// APPROVAL_EMAIL (optional; defaults to the script owner's address).
+// ============================================================
+
+function startPilotRender_(fields) {
+  const props = PropertiesService.getScriptProperties();
+  const code = Utilities.getUuid();
+  props.setProperty("v2cb_" + code, JSON.stringify({ created: Date.now(), verse_ref: fields.verse_ref }));
+  const payload = Object.assign({}, fields, {
+    callback_url: ScriptApp.getService().getUrl(),
+    callback_code: code,
+  });
+  const gh = dispatchGithub_("create_verse_short_v2", payload);
+  if (gh.status !== 204) {
+    props.deleteProperty("v2cb_" + code);
+    Logger.log("Pilot dispatch failed: " + gh.status + " " + gh.body);
+    return "failed: " + gh.status;
+  }
+  return "started";
+}
+
+function approvalEmail_() {
+  return PropertiesService.getScriptProperties().getProperty("APPROVAL_EMAIL") ||
+    Session.getEffectiveUser().getEmail();
+}
+
+function htmlEsc_(s) {
+  return String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function sendApprovalEmail_(approveId, r) {
+  const base = ScriptApp.getService().getUrl();
+  const approveUrl = base + "?action=approve&id=" + encodeURIComponent(approveId);
+  const rejectUrl = base + "?action=reject&id=" + encodeURIComponent(approveId);
+  const watchUrl = "https://www.youtube.com/shorts/" + encodeURIComponent(r.youtube_id);
+  const studioUrl = "https://studio.youtube.com/video/" + encodeURIComponent(r.youtube_id) + "/edit";
+  const html =
+    "<div style='font-family:Arial,sans-serif;max-width:560px'>" +
+    "<h2 style='margin:0 0 8px'>Today's new-format Short is ready</h2>" +
+    "<p style='margin:0 0 4px'><b>Hook:</b> " + htmlEsc_(r.hook) + "</p>" +
+    "<p style='margin:0 0 4px'><b>Title:</b> " + htmlEsc_(r.title) + "</p>" +
+    "<p style='margin:0 0 4px'><b>Verse:</b> " + htmlEsc_(r.verse_ref) +
+    " &nbsp; <b>Look:</b> " + htmlEsc_(r.template) + "</p>" +
+    "<p style='margin:16px 0'><a href='" + watchUrl + "'>Watch the private preview</a>" +
+    " (sign in as the channel) &nbsp;|&nbsp; <a href='" + studioUrl + "'>Open in YouTube Studio</a></p>" +
+    "<p style='margin:20px 0'>" +
+    "<a href='" + approveUrl + "' style='background:#1a7f37;color:#fff;padding:12px 22px;" +
+    "border-radius:6px;text-decoration:none;font-weight:bold'>Approve and publish</a>" +
+    " &nbsp; <a href='" + rejectUrl + "' style='color:#b42318'>Reject</a></p>" +
+    "<p style='color:#666;font-size:13px'>Approving makes it public on YouTube, then posts it to " +
+    "Instagram and Facebook. If you do nothing, it stays private.</p></div>";
+  MailApp.sendEmail({
+    to: approvalEmail_(),
+    subject: "Approve today's Short: " + r.title,
+    htmlBody: html,
+    body: "Hook: " + r.hook + "\nTitle: " + r.title + "\nPreview: " + watchUrl +
+      "\nApprove: " + approveUrl + "\nReject: " + rejectUrl,
+  });
+}
+
+function pilotPage_(title, message) {
+  return HtmlService.createHtmlOutput(
+    "<div style='font-family:Arial,sans-serif;max-width:520px;margin:40px auto;padding:0 16px'>" +
+    "<h2>" + htmlEsc_(title) + "</h2>" + message + "</div>"
+  ).setTitle(title);
+}
+
+// Approval links. Approve shows a confirmation button first, so that email
+// security scanners that "click" links cannot approve by accident.
+function handleApprovalLink_(params) {
+  const props = PropertiesService.getScriptProperties();
+  const key = "v2ap_" + String(params.id || "");
+  const raw = params.id ? props.getProperty(key) : null;
+  if (!raw) return pilotPage_("Link expired", "<p>This approval link is no longer valid.</p>");
+  const r = JSON.parse(raw);
+
+  if (r.status !== "pending") {
+    return pilotPage_("Already " + r.status, "<p>" + htmlEsc_(r.title) + " was already " + htmlEsc_(r.status) + ".</p>");
+  }
+
+  if (params.action === "reject") {
+    r.status = "rejected";
+    props.setProperty(key, JSON.stringify(r));
+    return pilotPage_("Rejected", "<p>" + htmlEsc_(r.title) + " stays private. You can delete it in YouTube Studio.</p>");
+  }
+
+  if (params.confirm !== "1") {
+    const confirmUrl = ScriptApp.getService().getUrl() + "?action=approve&confirm=1&id=" + encodeURIComponent(params.id);
+    return pilotPage_("Publish this Short?",
+      "<p><b>" + htmlEsc_(r.title) + "</b></p>" +
+      "<p><a href='" + confirmUrl + "' target='_top' style='background:#1a7f37;color:#fff;padding:12px 22px;" +
+      "border-radius:6px;text-decoration:none;font-weight:bold'>Yes, publish it</a></p>");
+  }
+
+  const gh = dispatchGithub_("publish_verse_short_v2", {
+    youtube_id: r.youtube_id,
+    video_url: r.video_url,
+    title: r.title,
+    description: r.description,
+  });
+  if (gh.status !== 204) {
+    return pilotPage_("Could not publish", "<p>GitHub returned " + gh.status + ". Try the link again later.</p>");
+  }
+  r.status = "approved";
+  props.setProperty(key, JSON.stringify(r));
+  return pilotPage_("Approved", "<p>" + htmlEsc_(r.title) +
+    " will be public on YouTube within a few minutes, then posted to Instagram and Facebook.</p>");
+}
+
+// Removes pilot records older than 14 days (Script Properties have a size limit).
+function cleanupPilotRecords_() {
+  const props = PropertiesService.getScriptProperties();
+  const all = props.getProperties();
+  const cutoff = Date.now() - 14 * 86400000;
+  Object.keys(all).forEach(function (k) {
+    if (k.indexOf("v2ap_") !== 0 && k.indexOf("v2cb_") !== 0) return;
+    try {
+      if ((JSON.parse(all[k]).created || 0) < cutoff) props.deleteProperty(k);
+    } catch (e) { props.deleteProperty(k); }
+  });
+}
+
+// Run once from the editor: grants email permission and sends a test email.
+function testPilotEmail() {
+  MailApp.sendEmail(approvalEmail_(), "Daily Bible Verse: approval emails work",
+    "This is a test. Pilot approval emails will arrive at this address.");
+  Logger.log("Test email sent to " + approvalEmail_());
+}
+
+// Run from the editor to try the whole pilot loop without touching the
+// current daily videos: makes captions (dry run), starts the pilot render,
+// and you get the approval email when it is uploaded (still private).
+function testPilotRender() {
+  const r = run({ dryRun: true });
+  const status = startPilotRender_({
+    verse_ref: r.verse_reference,
+    verse_text: r.cleaned_verse_text,
+    translation: VERSE_TRANSLATION_LABEL,
+    theme: r.weekly_theme,
+    hook: r.hook,
+    youtube_title: buildTitle_(r.hook, r.verse_reference),
+    youtube_description: r.youtube_description,
+    day_index: today_().daysSinceStart,
+  });
+  Logger.log("Pilot render: " + status + " (hook: " + r.hook + ")");
 }

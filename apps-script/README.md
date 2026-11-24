@@ -103,3 +103,37 @@ The logic was tested offline with stand-ins for Google's services. Calls to
 bible-api.com's World English Bible text, Cloudinary, Text-to-Speech and GitHub
 have not been run from this new code, so run `testDryRun` first and watch the
 first real day's executions.
+
+## Pilot: new-format verse Short with approval email
+
+The pilot renders a new-format Short each morning (moving footage, spoken hook,
+word-by-word captions), uploads it to YouTube as **private**, and emails you a
+preview with **Approve** and **Reject** buttons. Approving makes it public and
+posts it to Instagram and Facebook. Doing nothing leaves it private. The
+current daily videos keep running unchanged.
+
+The rendering side lives in `Daily_Bible_Verse_Automation` (see `docs/PILOT.md`
+there; set that up first).
+
+### Turn it on
+
+1. Paste the updated `DailyBibleVerse.gs` and save.
+2. **Deploy > Manage deployments > edit > New version > Deploy.** The web app must
+   be set to **Execute as: Me** and **Who has access: Anyone**, so GitHub can tell
+   the script when a video is ready. (Unknown or replayed notices are ignored.)
+3. Run **`testPilotEmail`** once. Google asks you to allow sending email; accept.
+   A test email arrives at the script owner's address. To use a different
+   address, add Script Property `APPROVAL_EMAIL`.
+4. Run **`testPilotRender`**. About 5 minutes later you should get the approval
+   email for today's verse. Nothing is public until you approve.
+5. To run it every day with the 6:00 job, add Script Property
+   **`PILOT_V2_ENABLED` = `true`**. Remove it (or set `false`) to stop.
+
+### Notes
+
+- The approve link opens a confirmation page first ("Yes, publish it"), so email
+  security scanners that open links can't publish by accident. Links expire after
+  14 days.
+- While both formats run, the same verse can go out twice in a day (old Short
+  publicly, new one after your approval). That's useful for comparing them for a
+  couple of weeks; after that, turn off whichever performs worse.
