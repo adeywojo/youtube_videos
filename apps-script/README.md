@@ -142,3 +142,18 @@ there; set that up first).
 - While both formats run, the same verse can go out twice in a day (old Short
   publicly, new one after your approval). That's useful for comparing them for a
   couple of weeks; after that, turn off whichever performs worse.
+
+## Pilot: new-format prayer Short (replaces the old prayer videos)
+
+Same engine and approval flow as the verse pilot, for prayers: a 45-60 second
+prayer (8-10 lines) with a spoken opening line ("Pray this with me right now"),
+word-by-word captions in a softer female voice, and "Type AMEN if you prayed this
+with me". It uses a different clip, look and music from that day's verse Short.
+
+- **Try it once:** run **`testPrayerRender`**. It writes a short prayer for today's
+  verse and starts the render; the approval email (subject "Approve today's prayer
+  Short: ...") arrives a few minutes later. Nothing is public until you approve.
+- **Turn it on daily:** add Script Property **`PRAYER_V2_ENABLED` = `true`**. From
+  then on the 6:00 run starts the prayer render too, the old prayer narration is
+  skipped, and `triggerPrayerVideo` does nothing, so the old prayer Short and its
+  long-form copy stop. Remove the property (or set `false`) to go back.

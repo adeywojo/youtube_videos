@@ -340,13 +340,15 @@ const CAPTIONS_SCHEMA = {
     description: { type: "string" },
     prayer_lines: { type: "array", items: { type: "string" } },
     prayer_title_hook: { type: "string" },
+    prayer_hook: { type: "string" },
     prayer_description: { type: "string" },
   },
-  required: ["hook", "title_hook", "description", "prayer_lines", "prayer_title_hook", "prayer_description"],
+  required: ["hook", "title_hook", "description", "prayer_lines", "prayer_title_hook", "prayer_hook",
+    "prayer_description"],
   additionalProperties: false,
 };
 
-function buildCaptionsPrompt_(dow, theme, verseRef, verseText, hookStyle) {
+function buildCaptionsPrompt_(dow, theme, verseRef, verseText, hookStyle, shortPrayer) {
   return (
     "You are a Christian content writer for a Daily Bible Verse YouTube channel.\n\n" +
     "Inputs:\n" +
@@ -377,12 +379,17 @@ function buildCaptionsPrompt_(dow, theme, verseRef, verseText, hookStyle) {
     "- Vary sentence length: mix short heartfelt phrases with longer flowing thoughts\n" +
     "- Include moments of vulnerability, gratitude, and quiet confidence in God\n" +
     "- Split into display lines of 10-14 words maximum each\n" +
-    "- Target 18-22 lines total (for a 2-3 minute video)\n" +
+    (shortPrayer
+      ? "- Target 8-10 lines, about 100-130 words in total (a 45-60 second video). Keep it focused on one need from the verse\n"
+      : "- Target 18-22 lines total (for a 2-3 minute video)\n") +
     "- Each line must end at a natural pause or breath point\n" +
     "- Start with an intimate opening like 'Lord, we come to You today' or 'Father, just to be in Your presence'\n" +
     "- End with 'In Jesus name, Amen'\n" +
     "- No emojis, no rhyming, no formal 'thee' or 'thou' language\n" +
     "- Do not mention chapter:verse numbers in the prayer\n\n" +
+    "- prayer_hook: 4 to 8 words spoken and shown in the first second, inviting the viewer to pray along " +
+    "(examples: 'Pray this with me right now', 'Let's give this worry to God', 'If you need peace tonight, pray this'). " +
+    "Vary it day to day. No reference, no numbers, no emojis.\n\n" +
     "Task 3 - Prayer video title and description:\n" +
     "- prayer_title_hook: 3 to 8 words, inspiring, reflects the theme. Do NOT include the verse " +
     "reference or any numbers; it is added automatically.\n" +
@@ -423,8 +430,8 @@ function callClaudeForCaptions_(prompt) {
 }
 
 // Generates captions, regenerating if the AI wrote a wrong Bible reference.
-function generateCaptions_(dow, theme, verseRef, verseText, hookStyle) {
-  const prompt = buildCaptionsPrompt_(dow, theme, verseRef, verseText, hookStyle || HOOK_STYLES[0]);
+function generateCaptions_(dow, theme, verseRef, verseText, hookStyle, shortPrayer) {
+  const prompt = buildCaptionsPrompt_(dow, theme, verseRef, verseText, hookStyle || HOOK_STYLES[0], !!shortPrayer);
   let lastProblem = "";
   for (let attempt = 1; attempt <= 3; attempt++) {
     const c = callClaudeForCaptions_(prompt);
@@ -433,7 +440,7 @@ function generateCaptions_(dow, theme, verseRef, verseText, hookStyle) {
       continue;
     }
     const wrong = findWrongReferences_(
-      [c.hook, c.title_hook, c.description, c.prayer_title_hook, c.prayer_description,
+      [c.hook, c.title_hook, c.description, c.prayer_title_hook, c.prayer_hook, c.prayer_description,
         c.prayer_lines.join(" ")].join("\n"),
       verseRef
     );
@@ -497,6 +504,7 @@ function doPost(e) {
     verse_ref: String(body.verse_ref || ""),
     hook: String(body.hook || ""),
     template: String(body.template || ""),
+    format: body.format === "prayer" ? "prayer" : "verse",
     run_url: String(body.run_url || ""),
     status: "pending",
     created: Date.now(),
@@ -593,9 +601,13 @@ function run(options) {
     "/" + CLOUDINARY_BG;
 
   // --- 5. Titles, descriptions and prayer script ---
+  const props = PropertiesService.getScriptProperties();
+  const prayerV2 = props.getProperty("PRAYER_V2_ENABLED") === "true";
+  const shortPrayer = prayerV2 || !!(options && options.shortPrayer);
   const hookStyle = HOOK_STYLES[t.daysSinceStart % HOOK_STYLES.length];
-  const captions = generateCaptions_(t.dow, theme, picked.ref, cleanedVerseText, hookStyle);
+  const captions = generateCaptions_(t.dow, theme, picked.ref, cleanedVerseText, hookStyle, shortPrayer);
   const hook = cleanText_(captions.hook).replace(/[|]+/g, "-");
+  const prayerHook = cleanText_(captions.prayer_hook).replace(/[|]+/g, "-");
   const title = buildTitle_(captions.title_hook, picked.ref);
   const description = picked.ref + " (" + VERSE_TRANSLATION_LABEL + ")\n\n" + captions.description.trim();
   const prayerTitle = buildTitle_(captions.prayer_title_hook, picked.ref);
@@ -617,14 +629,19 @@ function run(options) {
     ok: true,
     dry_run: dryRun,
     hook: hook,
+    prayer_hook: prayerHook,
     pilot_v2: "off",
+    prayer_v2: "off",
     prayer_lines: captions.prayer_lines,
     prayer_title: prayerTitle,
     prayer_description: prayerDescription,
   };
   if (dryRun) return result;
 
-  // --- 6. Prayer narration audio (used by the prayer video later) ---
+  // --- 6. Prayer narration audio for the OLD prayer video (skipped when
+  // Prayer Short v2 replaces it; v2 makes its own narration in GitHub Actions) ---
+  let ttsAudioUrl = "";
+  if (!prayerV2) {
   const maleVoices = [
     "en-US-Journey-D",
     "en-US-Neural2-D",
@@ -638,7 +655,8 @@ function run(options) {
     0.85
   );
   const ttsBlob = Utilities.newBlob(Utilities.base64Decode(audioContent), "audio/mp3", "prayer_tts.mp3");
-  const ttsAudioUrl = cloudinaryUploadAudio_(ttsBlob, "prayer_tts_" + Math.floor(Date.now() / 1000));
+  ttsAudioUrl = cloudinaryUploadAudio_(ttsBlob, "prayer_tts_" + Math.floor(Date.now() / 1000));
+  }
 
   // --- 7. Ask GitHub Actions to render and upload the verse Short ---
   // (The old version also made and downloaded a 30-second MP4 here that was
@@ -670,6 +688,12 @@ function run(options) {
       youtube_description: description,
       day_index: t.daysSinceStart,
     });
+  }
+
+  // --- 7c. Prayer Short v2 (replaces the old prayer videos), PRIVATE until you approve ---
+  // Turn on with Script Property PRAYER_V2_ENABLED = true
+  if (prayerV2) {
+    result.prayer_v2 = startPilotRender_(prayerRenderFields_(result, t), "create_prayer_short_v2");
   }
 
   // --- 8. Save prayer data for triggerPrayerVideo() ---
@@ -731,6 +755,10 @@ function checkSetup() {
 // ============================================================
 
 function triggerPrayerVideo() {
+  if (PropertiesService.getScriptProperties().getProperty("PRAYER_V2_ENABLED") === "true") {
+    Logger.log("Old prayer video skipped: replaced by Prayer Short v2 (started from the 6:00 run).");
+    return;
+  }
   const props = PropertiesService.getScriptProperties().getProperties();
 
   // Only run if the verse job produced prayer data today.
@@ -914,7 +942,8 @@ function triggerBibleReadingVideo() {
 // APPROVAL_EMAIL (optional; defaults to the script owner's address).
 // ============================================================
 
-function startPilotRender_(fields) {
+function startPilotRender_(fields, eventType) {
+  eventType = eventType || "create_verse_short_v2";
   const props = PropertiesService.getScriptProperties();
   if (!/\/exec$/.test(webAppUrl_())) {
     Logger.log("Pilot not started: set Script Property WEBAPP_URL to the /exec Web app URL " +
@@ -922,12 +951,12 @@ function startPilotRender_(fields) {
     return "not started: WEBAPP_URL missing";
   }
   const code = Utilities.getUuid();
-  props.setProperty("v2cb_" + code, JSON.stringify({ created: Date.now(), verse_ref: fields.verse_ref }));
+  props.setProperty("v2cb_" + code, JSON.stringify({ created: Date.now(), verse_ref: fields.verse_ref, event: eventType }));
   const payload = Object.assign({}, fields, {
     callback_url: webAppUrl_(),
     callback_code: code,
   });
-  const gh = dispatchGithub_("create_verse_short_v2", payload);
+  const gh = dispatchGithub_(eventType, payload);
   if (gh.status !== 204) {
     props.deleteProperty("v2cb_" + code);
     Logger.log("Pilot dispatch failed: " + gh.status + " " + gh.body);
@@ -954,7 +983,8 @@ function sendApprovalEmail_(approveId, r) {
   const studioUrl = "https://studio.youtube.com/video/" + encodeURIComponent(r.youtube_id) + "/edit";
   const html =
     "<div style='font-family:Arial,sans-serif;max-width:560px'>" +
-    "<h2 style='margin:0 0 8px'>Today's new-format Short is ready</h2>" +
+    "<h2 style='margin:0 0 8px'>Today's new-format " + (r.format === "prayer" ? "prayer" : "verse") +
+    " Short is ready</h2>" +
     "<p style='margin:0 0 4px'><b>Hook:</b> " + htmlEsc_(r.hook) + "</p>" +
     "<p style='margin:0 0 4px'><b>Title:</b> " + htmlEsc_(r.title) + "</p>" +
     "<p style='margin:0 0 4px'><b>Verse:</b> " + htmlEsc_(r.verse_ref) +
@@ -969,7 +999,7 @@ function sendApprovalEmail_(approveId, r) {
     "Instagram and Facebook. If you do nothing, it stays private.</p></div>";
   MailApp.sendEmail({
     to: approvalEmail_(),
-    subject: "Approve today's Short: " + r.title,
+    subject: "Approve today's " + (r.format === "prayer" ? "prayer" : "verse") + " Short: " + r.title,
     htmlBody: html,
     body: "Hook: " + r.hook + "\nTitle: " + r.title + "\nPreview: " + watchUrl +
       "\nApprove: " + approveUrl + "\nReject: " + rejectUrl,
@@ -1061,4 +1091,27 @@ function testPilotRender() {
     day_index: today_().daysSinceStart,
   });
   Logger.log("Pilot render: " + status + " (hook: " + r.hook + ")");
+}
+
+// Fields for the Prayer Short v2 render (max 10 top-level fields with the callback ones).
+function prayerRenderFields_(r, t) {
+  return {
+    verse_ref: r.verse_reference,
+    prayer_text: r.prayer_lines.join(" "),
+    theme: r.weekly_theme,
+    hook: r.prayer_hook,
+    youtube_title: r.prayer_title,
+    youtube_description: "A prayer inspired by " + r.verse_reference + " (" + VERSE_TRANSLATION_LABEL + ")\n\n" +
+      r.prayer_description,
+    day_index: t.daysSinceStart,
+  };
+}
+
+// Run from the editor to try the prayer Short loop: writes a short prayer
+// (dry run, nothing else published), starts the Prayer Short v2 render, and
+// you get the approval email when it is uploaded (still private).
+function testPrayerRender() {
+  const r = run({ dryRun: true, shortPrayer: true });
+  const status = startPilotRender_(prayerRenderFields_(r, today_()), "create_prayer_short_v2");
+  Logger.log("Prayer render: " + status + " (hook: " + r.prayer_hook + ", " + r.prayer_lines.length + " lines)");
 }
