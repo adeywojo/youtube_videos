@@ -166,6 +166,15 @@ function secret_(name) {
   return value;
 }
 
+// The public web app address (ends in /exec). Set Script Property WEBAPP_URL
+// to the URL shown under Deploy > Manage deployments. Without it, Apps Script
+// may report the private /dev address when run from the editor, which GitHub
+// cannot reach (401 Unauthorized) and which approval links should not use.
+function webAppUrl_() {
+  const fromProps = PropertiesService.getScriptProperties().getProperty("WEBAPP_URL");
+  return (fromProps || ScriptApp.getService().getUrl()).trim();
+}
+
 function jsonOutput_(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj))
     .setMimeType(ContentService.MimeType.JSON);
@@ -638,7 +647,7 @@ function run(options) {
     image_url: imageUrl,
     youtube_title: title,
     youtube_description: description,
-    callback_url: ScriptApp.getService().getUrl(),
+    callback_url: webAppUrl_(),
   });
   if (gh.status === 204) {
     result.youtube_ok = true;
@@ -707,6 +716,14 @@ function checkSetup() {
   const props = PropertiesService.getScriptProperties();
   const missing = REQUIRED_SECRETS.filter(function (k) { return !props.getProperty(k); });
   Logger.log(missing.length ? "MISSING Script Properties: " + missing.join(", ") : "All Script Properties are set.");
+  const url = props.getProperty("WEBAPP_URL") || "";
+  if (!/\/exec$/.test(url)) {
+    Logger.log("WEBAPP_URL is " + (url ? "not an /exec address: " + url : "not set") +
+      ". Set it to the Web app URL from Deploy > Manage deployments (it ends in /exec). " +
+      "The pilot's approval emails need it.");
+  } else {
+    Logger.log("WEBAPP_URL looks right: " + url);
+  }
 }
 
 // ============================================================
@@ -732,7 +749,7 @@ function triggerPrayerVideo() {
     prayer_title: props.prayer_title,
     prayer_description: props.prayer_description,
     tts_audio_url: props.tts_audio_url,
-    callback_url: ScriptApp.getService().getUrl(),
+    callback_url: webAppUrl_(),
   });
   if (gh.status !== 204) {
     throw new Error("Prayer GitHub trigger failed: " + gh.status + " " + gh.body);
@@ -875,7 +892,7 @@ function triggerBibleReadingVideo() {
     day_number: day,
     month_day: t.monthDay,
     verses: JSON.stringify(allVerses),
-    callback_url: ScriptApp.getService().getUrl(),
+    callback_url: webAppUrl_(),
   });
   if (gh.status !== 204) {
     throw new Error("GitHub trigger failed: " + gh.status + " " + gh.body);
@@ -899,10 +916,15 @@ function triggerBibleReadingVideo() {
 
 function startPilotRender_(fields) {
   const props = PropertiesService.getScriptProperties();
+  if (!/\/exec$/.test(webAppUrl_())) {
+    Logger.log("Pilot not started: set Script Property WEBAPP_URL to the /exec Web app URL " +
+      "(Deploy > Manage deployments). Current: " + webAppUrl_());
+    return "not started: WEBAPP_URL missing";
+  }
   const code = Utilities.getUuid();
   props.setProperty("v2cb_" + code, JSON.stringify({ created: Date.now(), verse_ref: fields.verse_ref }));
   const payload = Object.assign({}, fields, {
-    callback_url: ScriptApp.getService().getUrl(),
+    callback_url: webAppUrl_(),
     callback_code: code,
   });
   const gh = dispatchGithub_("create_verse_short_v2", payload);
@@ -925,7 +947,7 @@ function htmlEsc_(s) {
 }
 
 function sendApprovalEmail_(approveId, r) {
-  const base = ScriptApp.getService().getUrl();
+  const base = webAppUrl_();
   const approveUrl = base + "?action=approve&id=" + encodeURIComponent(approveId);
   const rejectUrl = base + "?action=reject&id=" + encodeURIComponent(approveId);
   const watchUrl = "https://www.youtube.com/shorts/" + encodeURIComponent(r.youtube_id);
@@ -981,7 +1003,7 @@ function handleApprovalLink_(params) {
   }
 
   if (params.confirm !== "1") {
-    const confirmUrl = ScriptApp.getService().getUrl() + "?action=approve&confirm=1&id=" + encodeURIComponent(params.id);
+    const confirmUrl = webAppUrl_() + "?action=approve&confirm=1&id=" + encodeURIComponent(params.id);
     return pilotPage_("Publish this Short?",
       "<p><b>" + htmlEsc_(r.title) + "</b></p>" +
       "<p><a href='" + confirmUrl + "' target='_top' style='background:#1a7f37;color:#fff;padding:12px 22px;" +

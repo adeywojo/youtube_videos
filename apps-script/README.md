@@ -121,12 +121,17 @@ there; set that up first).
 2. **Deploy > Manage deployments > edit > New version > Deploy.** The web app must
    be set to **Execute as: Me** and **Who has access: Anyone**, so GitHub can tell
    the script when a video is ready. (Unknown or replayed notices are ignored.)
-3. Run **`testPilotEmail`** once. Google asks you to allow sending email; accept.
+3. Copy the **Web app URL** shown in that deployment (it ends in **`/exec`**) and add it
+   as Script Property **`WEBAPP_URL`**. GitHub uses it to report that a video is
+   ready, and the approval links use it. (Without it, a test run from the editor
+   gives GitHub the private `/dev` address, which it cannot reach.) Run
+   `checkSetup` to confirm it reads "WEBAPP_URL looks right".
+4. Run **`testPilotEmail`** once. Google asks you to allow sending email; accept.
    A test email arrives at the script owner's address. To use a different
    address, add Script Property `APPROVAL_EMAIL`.
-4. Run **`testPilotRender`**. About 5 minutes later you should get the approval
+5. Run **`testPilotRender`**. About 2 to 3 minutes later you should get the approval
    email for today's verse. Nothing is public until you approve.
-5. To run it every day with the 6:00 job, add Script Property
+6. To run it every day with the 6:00 job, add Script Property
    **`PILOT_V2_ENABLED` = `true`**. Remove it (or set `false`) to stop.
 
 ### Notes
