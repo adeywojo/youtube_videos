@@ -156,7 +156,8 @@ const THEMES_BY_DOW = {
 // ============================================================
 
 function secret_(name) {
-  const value = PropertiesService.getScriptProperties().getProperty(name);
+  // Trim: a stray space or line break pasted with a key makes services reject it.
+  const value = (PropertiesService.getScriptProperties().getProperty(name) || "").trim();
   if (!value) {
     throw new Error(
       "Missing Script Property: " + name +
