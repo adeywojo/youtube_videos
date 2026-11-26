@@ -638,26 +638,6 @@ function run(options) {
   };
   if (dryRun) return result;
 
-  // --- 6. Prayer narration audio for the OLD prayer video (skipped when
-  // Prayer Short v2 replaces it; v2 makes its own narration in GitHub Actions) ---
-  let ttsAudioUrl = "";
-  if (!prayerV2) {
-  const maleVoices = [
-    "en-US-Journey-D",
-    "en-US-Neural2-D",
-    "en-US-Neural2-J",
-    "en-US-Studio-Q",
-    "en-US-Polyglot-1",
-  ];
-  const audioContent = synthesizeSpeech_(
-    captions.prayer_lines.join(" "),
-    maleVoices[idx % maleVoices.length],
-    0.85
-  );
-  const ttsBlob = Utilities.newBlob(Utilities.base64Decode(audioContent), "audio/mp3", "prayer_tts.mp3");
-  ttsAudioUrl = cloudinaryUploadAudio_(ttsBlob, "prayer_tts_" + Math.floor(Date.now() / 1000));
-  }
-
   // --- 7. Ask GitHub Actions to render and upload the verse Short ---
   // (The old version also made and downloaded a 30-second MP4 here that was
   // never used, and left a copy on Cloudinary every day. That step is gone.)
@@ -696,6 +676,35 @@ function run(options) {
     result.prayer_v2 = startPilotRender_(prayerRenderFields_(result, t), "create_prayer_short_v2");
   }
 
+  // --- 8a. Prayer narration for the OLD prayer video. Done AFTER the verse
+  // Shorts are started, so a problem here (e.g. Text-to-Speech or Cloudinary
+  // keys) can never stop the verse Shorts. Skipped when Prayer Short v2
+  // replaces the old prayer video (v2 makes its own narration in GitHub). ---
+  let ttsAudioUrl = "";
+  let prayerError = "";
+  if (!prayerV2) {
+    try {
+      const maleVoices = [
+        "en-US-Journey-D",
+        "en-US-Neural2-D",
+        "en-US-Neural2-J",
+        "en-US-Studio-Q",
+        "en-US-Polyglot-1",
+      ];
+      const audioContent = synthesizeSpeech_(
+        captions.prayer_lines.join(" "),
+        maleVoices[idx % maleVoices.length],
+        0.85
+      );
+      const ttsBlob = Utilities.newBlob(Utilities.base64Decode(audioContent), "audio/mp3", "prayer_tts.mp3");
+      ttsAudioUrl = cloudinaryUploadAudio_(ttsBlob, "prayer_tts_" + Math.floor(Date.now() / 1000));
+    } catch (err) {
+      prayerError = String(err && err.message || err);
+      result.prayer_error = prayerError;
+      Logger.log("Prayer narration failed (verse Shorts were still started): " + prayerError);
+    }
+  }
+
   // --- 8. Save prayer data for triggerPrayerVideo() ---
   PropertiesService.getScriptProperties().setProperties({
     prayer_lines: JSON.stringify(captions.prayer_lines),
@@ -704,14 +713,43 @@ function run(options) {
     image_url: imageUrl,
     prayer_date: t.dateStr,
     tts_audio_url: ttsAudioUrl,
+    prayer_error: prayerError,
   }, false); // false = keep all other properties (including the secrets)
 
   return result;
 }
 
+// Emails the owner when a scheduled job fails, then re-throws so the failure
+// still shows in Apps Script's Executions list.
+function notifyFailure_(jobName, err) {
+  const message = String(err && err.message || err);
+  try {
+    MailApp.sendEmail(approvalEmail_(), "Daily Bible Verse: " + jobName + " failed",
+      jobName + " failed at " + new Date().toISOString() + ":\n\n" + message +
+      "\n\nNothing was published by this job. Details: Apps Script editor > Executions.");
+  } catch (mailErr) {
+    Logger.log("Could not send failure email: " + mailErr);
+  }
+  throw err;
+}
+
 // Time-based trigger target: verse Short, logged to the first sheet.
 function triggerVerseVideo() {
-  const result = run();
+  let result;
+  try {
+    result = run();
+  } catch (err) {
+    notifyFailure_("This morning's verse run", err);
+  }
+  if (result.youtube_error || result.prayer_error ||
+      String(result.pilot_v2).indexOf("fail") === 0 || String(result.prayer_v2).indexOf("fail") === 0) {
+    try {
+      MailApp.sendEmail(approvalEmail_(), "Daily Bible Verse: part of this morning's run had a problem",
+        "Verse Short: " + (result.youtube_error || "started") +
+        "\nVerse pilot: " + result.pilot_v2 + "\nPrayer pilot: " + result.prayer_v2 +
+        "\nOld prayer narration: " + (result.prayer_error || "ok"));
+    } catch (mailErr) { Logger.log("Could not send warning email: " + mailErr); }
+  }
   const sheet = SpreadsheetApp.openById("1hRghd60KKQ5oAd6hqBC4B2RCEn1bRFQuaGXWX2qxe6Y").getSheets()[0];
   sheet.appendRow([
     result.date,
@@ -764,10 +802,15 @@ function triggerPrayerVideo() {
   // Only run if the verse job produced prayer data today.
   const today = today_().dateStr;
   if (props.prayer_date !== today) {
-    throw new Error("Prayer data is stale or missing. Expected date: " + today + ", found: " + props.prayer_date);
+    notifyFailure_("The prayer video", new Error("No prayer data for today (" + today + "); the morning verse run " +
+      "probably failed. Last prayer data: " + props.prayer_date));
   }
   if (!props.prayer_lines || !props.prayer_title) {
-    throw new Error("No prayer data found. Make sure the verse job ran first.");
+    notifyFailure_("The prayer video", new Error("No prayer data found. Make sure the verse job ran first."));
+  }
+  if (!props.tts_audio_url) {
+    notifyFailure_("The prayer video", new Error("This morning's prayer narration failed, so there is no prayer video today: " +
+      (props.prayer_error || "unknown error")));
   }
 
   const gh = dispatchGithub_("create_prayer_video", {
