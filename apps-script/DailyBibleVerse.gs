@@ -381,7 +381,8 @@ function buildCaptionsPrompt_(dow, theme, verseRef, verseText, hookStyle, shortP
     "- Include moments of vulnerability, gratitude, and quiet confidence in God\n" +
     "- Split into display lines of 10-14 words maximum each\n" +
     (shortPrayer
-      ? "- Target 9-11 lines and 120-150 words in total (a 50-60 second video read slowly). Fewer than 110 words is too short. " +
+      ? "- Target 10-12 lines and about 150 words in total (between 140 and 170 words; a 50-60 second video read slowly). " +
+        "Fewer than 130 words is too short, so count the words before answering. " +
         "Keep it focused on one need from the verse\n" +
         "- Write normal flowing sentences across the lines: capitalize only the first word of a sentence, 'I', and words " +
         "for God (You, Your, Lord, Father, Jesus). A line that continues a sentence starts in lowercase\n"
