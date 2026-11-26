@@ -381,7 +381,11 @@ function buildCaptionsPrompt_(dow, theme, verseRef, verseText, hookStyle, shortP
     "- Include moments of vulnerability, gratitude, and quiet confidence in God\n" +
     "- Split into display lines of 10-14 words maximum each\n" +
     (shortPrayer
-      ? "- Target 8-10 lines, about 100-130 words in total (a 45-60 second video). Keep it focused on one need from the verse\n"
+      ? "- Target 10-12 lines and about 150 words in total (between 140 and 170 words; a 50-60 second video read slowly). " +
+        "Fewer than 130 words is too short, so count the words before answering. " +
+        "Keep it focused on one need from the verse\n" +
+        "- Write normal flowing sentences across the lines: capitalize only the first word of a sentence, 'I', and words " +
+        "for God (You, Your, Lord, Father, Jesus). A line that continues a sentence starts in lowercase\n"
       : "- Target 18-22 lines total (for a 2-3 minute video)\n") +
     "- Each line must end at a natural pause or breath point\n" +
     "- Start with an intimate opening like 'Lord, we come to You today' or 'Father, just to be in Your presence'\n" +
@@ -486,11 +490,23 @@ function doGet(e) {
 function doPost(e) {
   let body = {};
   try { body = JSON.parse((e && e.postData && e.postData.contents) || "{}"); } catch (err) { /* ignore */ }
-  if (body.kind !== "verse_short_v2_ready") return jsonOutput_({ ok: true, ignored: true });
-
   const props = PropertiesService.getScriptProperties();
+  function note(outcome) {
+    // Visible in Apps Script > Executions (click the doPost row) and in Script
+    // Property last_callback, to diagnose a missing approval email.
+    const summary = new Date().toISOString() + " " + (body.kind || "other") + " " +
+      (body.format || "") + " " + (body.youtube_id || "") + ": " + outcome;
+    Logger.log("doPost " + summary);
+    props.setProperty("last_callback", summary);
+  }
+  if (body.kind !== "verse_short_v2_ready") {
+    note("ignored (not a pilot notice)");
+    return jsonOutput_({ ok: true, ignored: true });
+  }
+
   const cbKey = "v2cb_" + String(body.callback_code || "");
   if (!body.callback_code || !props.getProperty(cbKey)) {
+    note("REJECTED: unknown or already-used callback code");
     return jsonOutput_({ ok: false, message: "Unknown callback code" });
   }
   props.deleteProperty(cbKey);
@@ -511,7 +527,13 @@ function doPost(e) {
     created: Date.now(),
   };
   props.setProperty("v2ap_" + approveId, JSON.stringify(record));
-  sendApprovalEmail_(approveId, record);
+  try {
+    sendApprovalEmail_(approveId, record);
+    note("approval email sent to " + approvalEmail_());
+  } catch (err) {
+    note("EMAIL FAILED: " + err);
+    throw err;
+  }
   return jsonOutput_({ ok: true });
 }
 
@@ -1137,11 +1159,33 @@ function testPilotRender() {
   Logger.log("Pilot render: " + status + " (hook: " + r.hook + ")");
 }
 
+// Joins prayer display lines into one text. A line that continues the
+// previous sentence starts in lowercase (Claude often capitalizes every line),
+// except for "I" and words for God.
+const KEEP_CAPITALIZED = ["I", "I'm", "I've", "I'll", "I'd", "God", "Lord", "Jesus", "Christ", "Father",
+  "Spirit", "Holy", "You", "Your", "Yours", "Yourself", "He", "His", "Him", "Amen"];
+
+function joinPrayerLines_(lines) {
+  const out = [];
+  (lines || []).forEach(function (raw, i) {
+    let line = cleanText_(raw);
+    if (!line) return;
+    const prev = out.length ? out[out.length - 1] : "";
+    const continues = i > 0 && prev && !/[.!?]["')\]]?$/.test(prev);
+    if (continues) {
+      const first = line.split(/\s+/)[0].replace(/[^A-Za-z']/g, "");
+      if (KEEP_CAPITALIZED.indexOf(first) === -1) line = line.charAt(0).toLowerCase() + line.slice(1);
+    }
+    out.push(line);
+  });
+  return out.join(" ").replace(/\s+([,.;:!?])/g, "$1");
+}
+
 // Fields for the Prayer Short v2 render (max 10 top-level fields with the callback ones).
 function prayerRenderFields_(r, t) {
   return {
     verse_ref: r.verse_reference,
-    prayer_text: r.prayer_lines.join(" "),
+    prayer_text: joinPrayerLines_(r.prayer_lines),
     theme: r.weekly_theme,
     hook: r.prayer_hook,
     youtube_title: r.prayer_title,
@@ -1158,4 +1202,27 @@ function testPrayerRender() {
   const r = run({ dryRun: true, shortPrayer: true });
   const status = startPilotRender_(prayerRenderFields_(r, today_()), "create_prayer_short_v2");
   Logger.log("Prayer render: " + status + " (hook: " + r.prayer_hook + ", " + r.prayer_lines.length + " lines)");
+}
+
+// Run from the editor if an approval email went missing: re-sends the email
+// for the newest video still waiting for approval, and logs what it found.
+function resendLatestApproval() {
+  const props = PropertiesService.getScriptProperties();
+  Logger.log("Last notice from GitHub: " + (props.getProperty("last_callback") || "none recorded yet"));
+  const all = props.getProperties();
+  let newestId = null, newest = null;
+  Object.keys(all).forEach(function (k) {
+    if (k.indexOf("v2ap_") !== 0) return;
+    try {
+      const r = JSON.parse(all[k]);
+      if (r.status === "pending" && (!newest || r.created > newest.created)) { newest = r; newestId = k.slice(5); }
+    } catch (e) { /* skip */ }
+  });
+  if (!newest) {
+    Logger.log("No video is waiting for approval. If GitHub uploaded one, its notice was not accepted: " +
+      "check that the latest code is deployed as a new version.");
+    return;
+  }
+  sendApprovalEmail_(newestId, newest);
+  Logger.log("Re-sent approval email for " + newest.title + " (" + newest.format + ") to " + approvalEmail_());
 }
