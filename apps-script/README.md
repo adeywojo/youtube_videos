@@ -157,3 +157,11 @@ with me". It uses a different clip, look and music from that day's verse Short.
   then on the 6:00 run starts the prayer render too, the old prayer narration is
   skipped, and `triggerPrayerVideo` does nothing, so the old prayer Short and its
   long-form copy stop. Remove the property (or set `false`) to go back.
+
+### If an approval email doesn't arrive
+
+Run **`resendLatestApproval`** from the editor. It logs the last notice received
+from GitHub (also stored in Script Property `last_callback`) and re-sends the
+email for the newest video still waiting for approval. If it says no video is
+waiting, GitHub's notice was not accepted: make sure the latest code is deployed
+as a **new version** (Deploy > Manage deployments > Edit > New version).
