@@ -165,3 +165,34 @@ from GitHub (also stored in Script Property `last_callback`) and re-sends the
 email for the newest video still waiting for approval. If it says no video is
 waiting, GitHub's notice was not accepted: make sure the latest code is deployed
 as a **new version** (Deploy > Manage deployments > Edit > New version).
+
+## Weekly long-form prayer video (Monday morning)
+
+Every Monday the script asks Claude for a new guided **morning prayer**
+(about 1,150-1,350 words, written as one continuous prayer with short
+bridges between themes), then starts the long-form render in
+`Daily_Bible_Verse_Automation` (`create_long_prayer.yml`). The video is
+uploaded **private**, added to the Morning Prayer playlist, and you get an
+email titled "Approve this week's morning prayer video: ...". Approving
+publishes it on YouTube only (long videos are not posted to Instagram or
+Facebook). Doing nothing leaves it private.
+
+Safety: Claude only names the Bible passages. The script fetches the exact
+KJV text from bible-api.com and drops any passage it cannot verify. A script
+with Bible numbers inside the prayer text, or one that is too short, is
+rewritten (up to 3 tries) and otherwise nothing is started and you get a
+failure email. Recently used passages and titles are remembered so they
+don't repeat for a while.
+
+1. Paste the updated `DailyBibleVerse.gs`, save, and **Deploy > Manage
+   deployments > edit > New version > Deploy** (needed for the new email).
+2. Run **`testLongMorningScript`**: it writes a script and logs it (title,
+   word count, passages). Nothing is started.
+3. Run **`testLongMorningRender`** for a full test: about 25-40 minutes later
+   the approval email arrives. Nothing is public until you approve.
+4. Run **`installLongMorningSchedule`** once. It adds a trigger that runs
+   `triggerLongMorningPrayer` every Monday between 4:00 and 5:00 (Alberta
+   time), so the email should be waiting by about 5:30.
+
+Optional: Script Property `LONGFORM_MODEL` to use a different Claude model
+for the long scripts (default: the same model as the daily captions).
