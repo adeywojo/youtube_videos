@@ -1376,7 +1376,8 @@ function buildLongMorningPrompt_(recentRefs, recentTitles) {
     "Audience: Christians of all backgrounds starting their day. Tone: gentle, warm, sincere, hopeful, " +
       "biblically sound. No prosperity-gospel promises, no spiritual-warfare or 'decree and declare' " +
       "language, no fear, guilt or hype. Plain everyday English, short sentences, spoken aloud by one " +
-      "calm female voice.",
+      "calm female voice. No comparisons with death or other people's misfortune (e.g. \"some people " +
+      "didn't wake up today\"). Don't use the same distinctive word twice (e.g. \"mundane\").",
     "",
     "It must feel like ONE continuous prayer, not separate prayers:",
     "- Each section after the first begins with a short bridging line that flows from the previous " +
@@ -1398,7 +1399,8 @@ function buildLongMorningPrompt_(recentRefs, recentTitles) {
       "The passage is read aloud before the section's paragraphs, so the paragraphs should respond to it. " +
       "Do NOT quote the verse text yourself. Use \"\" for a section without a passage.",
     "7. chapter \"Declarations for the day\", heading \"Say this with me\", ref \"\": first paragraph invites " +
-      "the viewer to say the lines aloud; then 6 paragraphs, each ONE short first-person declaration rooted " +
+      "the viewer to say the lines aloud, in plain words (no \"aligning yourself\", \"speaking it into " +
+      "existence\" or similar phrases); then 6 paragraphs, each ONE short first-person declaration rooted " +
       "in Scripture (e.g. \"I am not alone today. God goes before me.\").",
     "8. chapter \"Closing prayer\", heading \"Closing prayer\", ref \"\": 2 paragraphs of 60-80 words sending " +
       "the viewer into the day with God, the second ending exactly with: In Jesus' name I pray. Amen.",
@@ -1411,7 +1413,8 @@ function buildLongMorningPrompt_(recentRefs, recentTitles) {
     "title_hook: a bold, gentle FIRST-PERSON declaration for the YouTube title, 3-8 words, no quotes, no " +
       "emojis, no clickbait (e.g. \"I Will Not Carry Today Alone\", \"God Is Already in My Day\"). " +
       "Use Title Case. Avoid these recent titles: " + (recentTitles.length ? recentTitles.join("; ") : "none") + ".",
-    "thumbnail_text: the same idea in 3-5 words for the thumbnail (e.g. \"I won't carry today alone\").",
+    "thumbnail_text: the same first-person idea in 3-5 words for the thumbnail (e.g. \"I won't carry today " +
+      "alone\", \"I begin this day with God\").",
     "description_intro: 2 sentences for the YouTube description: what this prayer covers and who it is for.",
   ].join("\n");
 }
@@ -1476,7 +1479,8 @@ function finishLongScript_(cfg, c, sections, words) {
           const text = cleanText_(data.text);
           const verses = (data.verses || []).length;
           if (text && verses >= 1 && verses <= 4 && text.length <= 600) {
-            sec.ref = cleanText_(data.reference) || ref;
+            // bible-api.com names the book "Psalms"; a single psalm is "Psalm 118:24".
+            sec.ref = (cleanText_(data.reference) || ref).replace(/^Psalms\b/, "Psalm");
             sec.scripture = text;
             usedRefs.push(sec.ref);
           } else {
