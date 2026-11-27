@@ -1384,13 +1384,15 @@ function buildLongMorningPrompt_(recentRefs, recentTitles) {
     "- Only the final section ends with Amen. No other section ends with Amen or sounds like an ending.",
     "",
     "Structure (sections in this order):",
-    "1. chapter \"Welcome\", heading \"\", ref \"\": 2 short paragraphs inviting the viewer to pause and pray " +
-      "along (where they are, breathe, no perfect words needed). The first sentence is a gentle hook.",
+    "1. chapter \"Welcome\", heading \"\", ref \"\": 2 paragraphs of 50-70 words each, inviting the viewer to " +
+      "pause and pray along (where they are, breathe, no perfect words needed). The first sentence is a gentle hook.",
     "2-6. Five prayer sections, each one theme for a new day. Choose fresh themes this week, for example: " +
       "thanksgiving for a new day, surrender of plans, guidance, peace over worry, strength, patience, " +
       "kindness, work, family and friends, people who are hurting, rest in God's presence, joy, trust. " +
       "Each: chapter = a short theme name; heading = 2-4 words shown on screen (e.g. \"Peace for my mind\"); " +
-      "2-3 paragraphs in the first person (\"I\", \"my\"), addressing God as Father, Lord or You.",
+      "EXACTLY 3 paragraphs, each 70-90 words (4-6 sentences), in the first person (\"I\", \"my\"), " +
+      "addressing God as Father, Lord or You. Be specific and concrete about real morning life (the commute, " +
+      "work, children, bills, tiredness, a hard conversation), not general.",
     "   At least 4 of these 5 sections have a ref: one KJV Bible passage of 1-3 consecutive verses that fits " +
       "the theme, written exactly like \"Psalm 143:8\" or \"Philippians 4:6-7\" (book name, chapter:verse). " +
       "The passage is read aloud before the section's paragraphs, so the paragraphs should respond to it. " +
@@ -1398,10 +1400,11 @@ function buildLongMorningPrompt_(recentRefs, recentTitles) {
     "7. chapter \"Declarations for the day\", heading \"Say this with me\", ref \"\": first paragraph invites " +
       "the viewer to say the lines aloud; then 6 paragraphs, each ONE short first-person declaration rooted " +
       "in Scripture (e.g. \"I am not alone today. God goes before me.\").",
-    "8. chapter \"Closing prayer\", heading \"Closing prayer\", ref \"\": 1-2 paragraphs sending the viewer " +
-      "into the day with God, ending exactly with: In Jesus' name I pray. Amen.",
+    "8. chapter \"Closing prayer\", heading \"Closing prayer\", ref \"\": 2 paragraphs of 60-80 words sending " +
+      "the viewer into the day with God, the second ending exactly with: In Jesus' name I pray. Amen.",
     "",
-    "Length: 1,150 to 1,350 words in all paragraphs together (about 9-10 minutes when read slowly). " +
+    "Length: 1,150 to 1,350 words in all paragraphs together (about 9-10 minutes when read slowly). This is " +
+      "long on purpose: keep to the paragraph counts and lengths above; short paragraphs are not acceptable. " +
       "Never write chapter:verse numbers or Bible references inside the paragraphs, title or description.",
     "Do not use these passages (used recently): " + (recentRefs.length ? recentRefs.join("; ") : "none") + ".",
     "",
@@ -1423,10 +1426,12 @@ function generateLongScript_(format) {
   const props = PropertiesService.getScriptProperties();
   const recentRefs = JSON.parse(props.getProperty("long_" + format + "_recent_refs") || "[]");
   const recentTitles = JSON.parse(props.getProperty("long_" + format + "_recent_titles") || "[]");
-  const prompt = buildLongMorningPrompt_(recentRefs, recentTitles);
+  const basePrompt = buildLongMorningPrompt_(recentRefs, recentTitles);
   let problem = "";
+  let feedback = "";
+  let best = null;   // longest draft that passed every check except length
   for (let attempt = 1; attempt <= 3; attempt++) {
-    const c = callClaudeJson_(prompt, LONG_SCRIPT_SCHEMA, 8000);
+    const c = callClaudeJson_(basePrompt + feedback, LONG_SCRIPT_SCHEMA, 8000);
     const sections = (c.sections || []).filter(function (s) { return s.paragraphs && s.paragraphs.length; });
     const allText = sections.map(function (s) { return s.paragraphs.join(" "); }).join(" ");
     const words = countWords_(allText);
@@ -1435,10 +1440,27 @@ function generateLongScript_(format) {
     else if (words < 950) problem = "too short (" + words + " words)";
     else if (stray.length) problem = "Bible numbers inside the text: " + stray.join(", ");
     else problem = "";
+    if (/^too short/.test(problem) && sections.length >= 6 && !stray.length && words >= 800 &&
+        (!best || words > best.words)) {
+      best = { c: c, sections: sections, words: words };
+    }
     if (problem) {
       Logger.log("Long script attempt " + attempt + " rejected: " + problem);
-      continue;
+      feedback = /^too short/.test(problem)
+        ? "\n\nIMPORTANT: your previous draft was only " + words + " words. It must be at least 1,150 words. " +
+          "Write 3 full paragraphs of 70-90 words in every prayer section, and longer welcome and closing paragraphs."
+        : "\n\nIMPORTANT: your previous draft was rejected (" + problem + "). Fix that.";
+      if (attempt < 3 || !best) continue;
+      Logger.log("Using the longest draft (" + best.words + " words; the video will be a little shorter).");
+      return finishLongScript_(cfg, best.c, best.sections, best.words);
     }
+    return finishLongScript_(cfg, c, sections, words);
+  }
+  throw new Error("Could not write a usable long-form script after 3 attempts: " + problem);
+}
+
+// Turns an accepted draft into the render script (fetching the KJV text).
+function finishLongScript_(cfg, c, sections, words) {
     // Fetch the exact KJV text for each reference; drop any that can't be verified.
     const usedRefs = [];
     const outSections = sections.map(function (s, i) {
@@ -1478,8 +1500,6 @@ function generateLongScript_(format) {
       sections: outSections,
     };
     return { script: script, words: words, refs: usedRefs, titleHook: titleHook };
-  }
-  throw new Error("Could not write a usable long-form script after 3 attempts: " + problem);
 }
 
 function rememberLongScript_(format, result) {
