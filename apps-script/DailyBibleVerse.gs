@@ -470,7 +470,19 @@ function generateCaptions_(dow, theme, verseRef, verseText, hookStyle, shortPray
 function doGet(e) {
   const params = (e && e.parameter) || {};
   if (params.action === "approve" || params.action === "reject") {
-    return handleApprovalLink_(params);
+    // Show the real error instead of Google's generic "could not complete"
+    // page, and log it (Executions + Script Property last_approval_error).
+    try {
+      return handleApprovalLink_(params);
+    } catch (err) {
+      const msg = String(err && err.message || err);
+      Logger.log("Approval link failed: " + msg + "\n" + (err && err.stack || ""));
+      PropertiesService.getScriptProperties().setProperty("last_approval_error",
+        new Date().toISOString() + " " + params.action + " " + params.id + ": " + msg);
+      return pilotPage_("Something went wrong",
+        "<p>The " + htmlEsc_(params.action) + " could not be completed: " + htmlEsc_(msg) + "</p>" +
+        "<p>Nothing was published. Try the link again in a minute, or tell Claude what this page says.</p>");
+    }
   }
   const expected = PropertiesService.getScriptProperties().getProperty("WEBAPP_TOKEN");
   const given = e && e.parameter ? e.parameter.token : "";
@@ -1106,19 +1118,34 @@ function handleApprovalLink_(params) {
       "border-radius:6px;text-decoration:none;font-weight:bold'>Yes, publish it</a></p>");
   }
 
-  const gh = dispatchGithub_("publish_verse_short_v2", {
-    youtube_id: r.youtube_id,
-    video_url: r.video_url,
-    title: r.title,
-    description: r.description,
-  });
-  if (gh.status !== 204) {
-    return pilotPage_("Could not publish", "<p>GitHub returned " + gh.status + ". Try the link again later.</p>");
+  // One approval at a time, so a double tap (or two copies of the email)
+  // cannot start two publish runs.
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(15000)) {
+    return pilotPage_("Busy", "<p>Another approval is being processed. Try the link again in a moment.</p>");
   }
-  r.status = "approved";
-  props.setProperty(key, JSON.stringify(r));
-  return pilotPage_("Approved", "<p>" + htmlEsc_(r.title) +
-    " will be public on YouTube within a few minutes, then posted to Instagram and Facebook.</p>");
+  try {
+    const fresh = JSON.parse(props.getProperty(key) || "{}");
+    if (fresh.status && fresh.status !== "pending") {
+      return pilotPage_("Already " + fresh.status,
+        "<p>" + htmlEsc_(fresh.title) + " was already " + htmlEsc_(fresh.status) + ".</p>");
+    }
+    const gh = dispatchGithub_("publish_verse_short_v2", {
+      youtube_id: r.youtube_id,
+      video_url: r.video_url,
+      title: r.title,
+      description: r.description,
+    });
+    if (gh.status !== 204) {
+      return pilotPage_("Could not publish", "<p>GitHub returned " + gh.status + ". Try the link again later.</p>");
+    }
+    r.status = "approved";
+    props.setProperty(key, JSON.stringify(r));
+    return pilotPage_("Approved", "<p>" + htmlEsc_(r.title) +
+      " will be public on YouTube within a few minutes, then posted to Instagram and Facebook.</p>");
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 // Removes pilot records older than 14 days (Script Properties have a size limit).
