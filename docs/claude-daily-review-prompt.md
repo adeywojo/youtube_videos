@@ -1,8 +1,14 @@
 # Prompt for the "Daily Short review (6:30am)" scheduled task
 
-Paste everything below the line into the scheduled task's instructions on
-claude.ai, with the **GitHub** connector switched on.
-Schedule: daily, 6:30am, America/Edmonton. Turn on push notifications.
+How it is set up (Nov 27, 2026): scheduled tasks do not get GitHub through a
+connector. A fresh session started by a scheduled task had no GitHub tools, so
+the review now runs inside one long-lived Claude Code session titled
+"Daily Short review (6:30am)", which has the Daily_Bible_Verse_Automation
+repository attached. A scheduled task wakes that session daily at 6:30am
+America/Edmonton, and you reply to it in that session in the Claude app.
+
+The instructions it receives each morning are close to the text below. Keep
+this copy for reference, or to recreate the task.
 
 ---
 
