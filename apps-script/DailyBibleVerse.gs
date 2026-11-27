@@ -533,7 +533,8 @@ function doPost(e) {
     verse_ref: String(body.verse_ref || ""),
     hook: String(body.hook || ""),
     template: String(body.template || ""),
-    format: body.format === "prayer" ? "prayer" : "verse",
+    format: /^long_/.test(String(body.format || "")) ? String(body.format)
+      : body.format === "prayer" ? "prayer" : "verse",
     run_url: String(body.run_url || ""),
     status: "pending",
     created: Date.now(),
@@ -1053,7 +1054,12 @@ function htmlEsc_(s) {
     .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+function isLong_(r) {
+  return /^long_/.test(String(r.format || ""));
+}
+
 function sendApprovalEmail_(approveId, r) {
+  if (isLong_(r)) return sendLongApprovalEmail_(approveId, r);
   const base = webAppUrl_();
   const approveUrl = base + "?action=approve&id=" + encodeURIComponent(approveId);
   const rejectUrl = base + "?action=reject&id=" + encodeURIComponent(approveId);
@@ -1081,6 +1087,36 @@ function sendApprovalEmail_(approveId, r) {
     htmlBody: html,
     body: "Hook: " + r.hook + "\nTitle: " + r.title + "\nPreview: " + watchUrl +
       "\nApprove: " + approveUrl + "\nReject: " + rejectUrl,
+  });
+}
+
+function sendLongApprovalEmail_(approveId, r) {
+  const base = webAppUrl_();
+  const approveUrl = base + "?action=approve&id=" + encodeURIComponent(approveId);
+  const rejectUrl = base + "?action=reject&id=" + encodeURIComponent(approveId);
+  const watchUrl = "https://www.youtube.com/watch?v=" + encodeURIComponent(r.youtube_id);
+  const studioUrl = "https://studio.youtube.com/video/" + encodeURIComponent(r.youtube_id) + "/edit";
+  const kind = String(r.format).replace(/^long_/, "");
+  const html =
+    "<div style='font-family:Arial,sans-serif;max-width:560px'>" +
+    "<h2 style='margin:0 0 8px'>This week's " + htmlEsc_(kind) + " prayer video is ready</h2>" +
+    "<p style='margin:0 0 4px'><b>Title:</b> " + htmlEsc_(r.title) + "</p>" +
+    "<p style='margin:0 0 4px'><b>Thumbnail text:</b> " + htmlEsc_(r.hook) + "</p>" +
+    "<p style='margin:0 0 4px'><b>Scripture (KJV):</b> " + htmlEsc_(r.verse_ref || "none") + "</p>" +
+    "<p style='margin:16px 0'><a href='" + watchUrl + "'>Watch the private preview</a>" +
+    " (sign in as the channel) &nbsp;|&nbsp; <a href='" + studioUrl + "'>Open in YouTube Studio</a></p>" +
+    "<p style='margin:20px 0'>" +
+    "<a href='" + approveUrl + "' style='background:#1a7f37;color:#fff;padding:12px 22px;" +
+    "border-radius:6px;text-decoration:none;font-weight:bold'>Approve and publish</a>" +
+    " &nbsp; <a href='" + rejectUrl + "' style='color:#b42318'>Reject</a></p>" +
+    "<p style='color:#666;font-size:13px'>Approving makes it public on YouTube (long videos are not " +
+    "posted to Instagram or Facebook). If you do nothing, it stays private. Tip: add end-screen " +
+    "elements in Studio during the last 16 seconds.</p></div>";
+  MailApp.sendEmail({
+    to: approvalEmail_(),
+    subject: "Approve this week's " + kind + " prayer video: " + r.title,
+    htmlBody: html,
+    body: "Title: " + r.title + "\nPreview: " + watchUrl + "\nApprove: " + approveUrl + "\nReject: " + rejectUrl,
   });
 }
 
@@ -1112,7 +1148,7 @@ function handleApprovalLink_(params) {
 
   if (params.confirm !== "1") {
     const confirmUrl = webAppUrl_() + "?action=approve&confirm=1&id=" + encodeURIComponent(params.id);
-    return pilotPage_("Publish this Short?",
+    return pilotPage_(isLong_(r) ? "Publish this video?" : "Publish this Short?",
       "<p><b>" + htmlEsc_(r.title) + "</b></p>" +
       "<p><a href='" + confirmUrl + "' target='_top' style='background:#1a7f37;color:#fff;padding:12px 22px;" +
       "border-radius:6px;text-decoration:none;font-weight:bold'>Yes, publish it</a></p>");
@@ -1142,7 +1178,8 @@ function handleApprovalLink_(params) {
     r.status = "approved";
     props.setProperty(key, JSON.stringify(r));
     return pilotPage_("Approved", "<p>" + htmlEsc_(r.title) +
-      " will be public on YouTube within a few minutes, then posted to Instagram and Facebook.</p>");
+      (isLong_(r) ? " will be public on YouTube within a few minutes.</p>"
+        : " will be public on YouTube within a few minutes, then posted to Instagram and Facebook.</p>"));
   } finally {
     lock.releaseLock();
   }
@@ -1252,4 +1289,251 @@ function resendLatestApproval() {
   }
   sendApprovalEmail_(newestId, newest);
   Logger.log("Re-sent approval email for " + newest.title + " (" + newest.format + ") to " + approvalEmail_());
+}
+
+// ============================================================
+// Long-form weekly prayer videos (16:9, about 9-11 minutes)
+//
+// Monday: "Morning prayer to start your day". Claude writes one continuous
+// guided prayer; it may only name Scripture references, and the exact KJV
+// text is fetched from bible-api.com (never written by the AI). GitHub
+// renders the video (create_long_prayer.yml), uploads it PRIVATE, and this
+// script emails you the usual approval link. Approving publishes it on
+// YouTube only (not Instagram or Facebook).
+//
+// Setup: run installLongMorningSchedule once (adds a Monday trigger).
+// Test: testLongMorningScript (writes and logs a script, starts nothing),
+//       testLongMorningRender (full run: render, private upload, email).
+// Optional Script Property LONGFORM_MODEL to use a different Claude model.
+// ============================================================
+
+const LONG_FORMATS = {
+  morning: {
+    titleSuffix: " | Morning Prayer to Start Your Day",
+    label: "Morning prayer",
+    eventFormat: "morning",
+    closingCta: "If you prayed with us this morning, type Amen in the comments, so others can be " +
+      "encouraged too. And if you'd like to start every morning in God's presence, subscribe, and " +
+      "join us again next week. Have a blessed day.",
+    descriptionCta: "Pray along out loud or quietly in your heart. Type AMEN in the comments if you " +
+      "prayed with us, and share this with someone who needs a calm start today.",
+  },
+};
+
+const LONG_SCRIPT_SCHEMA = {
+  type: "object",
+  properties: {
+    title_hook: { type: "string" },
+    thumbnail_text: { type: "string" },
+    description_intro: { type: "string" },
+    sections: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          chapter: { type: "string" },
+          heading: { type: "string" },
+          ref: { type: "string" },
+          paragraphs: { type: "array", items: { type: "string" } },
+        },
+        required: ["chapter", "heading", "ref", "paragraphs"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["title_hook", "thumbnail_text", "description_intro", "sections"],
+  additionalProperties: false,
+};
+
+function callClaudeJson_(prompt, schema, maxTokens) {
+  const model = PropertiesService.getScriptProperties().getProperty("LONGFORM_MODEL") || CLAUDE_MODEL;
+  const resp = UrlFetchApp.fetch("https://api.anthropic.com/v1/messages", {
+    method: "post",
+    contentType: "application/json",
+    headers: { "x-api-key": secret_("ANTHROPIC_API_KEY"), "anthropic-version": "2023-06-01" },
+    payload: JSON.stringify({
+      model: model,
+      max_tokens: maxTokens || 8000,
+      messages: [{ role: "user", content: prompt }],
+      output_config: { format: { type: "json_schema", schema: schema } },
+    }),
+    muteHttpExceptions: true,
+  });
+  if (resp.getResponseCode() !== 200) {
+    throw new Error("Claude API error " + resp.getResponseCode() + ": " + resp.getContentText().slice(0, 300));
+  }
+  const data = JSON.parse(resp.getContentText());
+  if (data.stop_reason === "refusal") throw new Error("Claude declined the request");
+  if (data.stop_reason === "max_tokens") throw new Error("Claude response was cut off (max_tokens)");
+  const textBlock = (data.content || []).filter(function (b) { return b.type === "text"; })[0];
+  if (!textBlock) throw new Error("Claude response had no text block");
+  return JSON.parse(textBlock.text);
+}
+
+function buildLongMorningPrompt_(recentRefs, recentTitles) {
+  return [
+    "Write the script for a guided MORNING PRAYER video for a Christian YouTube channel (Daily Bible Verse).",
+    "Audience: Christians of all backgrounds starting their day. Tone: gentle, warm, sincere, hopeful, " +
+      "biblically sound. No prosperity-gospel promises, no spiritual-warfare or 'decree and declare' " +
+      "language, no fear, guilt or hype. Plain everyday English, short sentences, spoken aloud by one " +
+      "calm female voice.",
+    "",
+    "It must feel like ONE continuous prayer, not separate prayers:",
+    "- Each section after the first begins with a short bridging line that flows from the previous " +
+      "section (for example: \"And as I trust You with my day, Lord, I also lift up the people I love.\").",
+    "- Only the final section ends with Amen. No other section ends with Amen or sounds like an ending.",
+    "",
+    "Structure (sections in this order):",
+    "1. chapter \"Welcome\", heading \"\", ref \"\": 2 short paragraphs inviting the viewer to pause and pray " +
+      "along (where they are, breathe, no perfect words needed). The first sentence is a gentle hook.",
+    "2-6. Five prayer sections, each one theme for a new day. Choose fresh themes this week, for example: " +
+      "thanksgiving for a new day, surrender of plans, guidance, peace over worry, strength, patience, " +
+      "kindness, work, family and friends, people who are hurting, rest in God's presence, joy, trust. " +
+      "Each: chapter = a short theme name; heading = 2-4 words shown on screen (e.g. \"Peace for my mind\"); " +
+      "2-3 paragraphs in the first person (\"I\", \"my\"), addressing God as Father, Lord or You.",
+    "   At least 4 of these 5 sections have a ref: one KJV Bible passage of 1-3 consecutive verses that fits " +
+      "the theme, written exactly like \"Psalm 143:8\" or \"Philippians 4:6-7\" (book name, chapter:verse). " +
+      "The passage is read aloud before the section's paragraphs, so the paragraphs should respond to it. " +
+      "Do NOT quote the verse text yourself. Use \"\" for a section without a passage.",
+    "7. chapter \"Declarations for the day\", heading \"Say this with me\", ref \"\": first paragraph invites " +
+      "the viewer to say the lines aloud; then 6 paragraphs, each ONE short first-person declaration rooted " +
+      "in Scripture (e.g. \"I am not alone today. God goes before me.\").",
+    "8. chapter \"Closing prayer\", heading \"Closing prayer\", ref \"\": 1-2 paragraphs sending the viewer " +
+      "into the day with God, ending exactly with: In Jesus' name I pray. Amen.",
+    "",
+    "Length: 1,150 to 1,350 words in all paragraphs together (about 9-10 minutes when read slowly). " +
+      "Never write chapter:verse numbers or Bible references inside the paragraphs, title or description.",
+    "Do not use these passages (used recently): " + (recentRefs.length ? recentRefs.join("; ") : "none") + ".",
+    "",
+    "title_hook: a bold, gentle FIRST-PERSON declaration for the YouTube title, 3-8 words, no quotes, no " +
+      "emojis, no clickbait (e.g. \"I Will Not Carry Today Alone\", \"God Is Already in My Day\"). " +
+      "Use Title Case. Avoid these recent titles: " + (recentTitles.length ? recentTitles.join("; ") : "none") + ".",
+    "thumbnail_text: the same idea in 3-5 words for the thumbnail (e.g. \"I won't carry today alone\").",
+    "description_intro: 2 sentences for the YouTube description: what this prayer covers and who it is for.",
+  ].join("\n");
+}
+
+function countWords_(s) {
+  return (String(s || "").match(/\S+/g) || []).length;
+}
+
+// Writes and checks the script. Scripture text is fetched, never AI-written.
+function generateLongScript_(format) {
+  const cfg = LONG_FORMATS[format];
+  const props = PropertiesService.getScriptProperties();
+  const recentRefs = JSON.parse(props.getProperty("long_" + format + "_recent_refs") || "[]");
+  const recentTitles = JSON.parse(props.getProperty("long_" + format + "_recent_titles") || "[]");
+  const prompt = buildLongMorningPrompt_(recentRefs, recentTitles);
+  let problem = "";
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const c = callClaudeJson_(prompt, LONG_SCRIPT_SCHEMA, 8000);
+    const sections = (c.sections || []).filter(function (s) { return s.paragraphs && s.paragraphs.length; });
+    const allText = sections.map(function (s) { return s.paragraphs.join(" "); }).join(" ");
+    const words = countWords_(allText);
+    const stray = referenceTokens_([c.title_hook, c.thumbnail_text, c.description_intro, allText].join(" "));
+    if (sections.length < 6) problem = "only " + sections.length + " sections";
+    else if (words < 950) problem = "too short (" + words + " words)";
+    else if (stray.length) problem = "Bible numbers inside the text: " + stray.join(", ");
+    else problem = "";
+    if (problem) {
+      Logger.log("Long script attempt " + attempt + " rejected: " + problem);
+      continue;
+    }
+    // Fetch the exact KJV text for each reference; drop any that can't be verified.
+    const usedRefs = [];
+    const outSections = sections.map(function (s, i) {
+      const sec = {
+        chapter: cleanText_(s.chapter) || ("Part " + (i + 1)),
+        paragraphs: s.paragraphs.map(cleanText_).filter(String),
+      };
+      if (i > 0 && cleanText_(s.heading)) sec.heading = cleanText_(s.heading);
+      const ref = cleanText_(s.ref);
+      if (ref && /^[1-3]?\s?[A-Za-z][A-Za-z ]+ \d{1,3}:\d{1,3}(-\d{1,3})?$/.test(ref)) {
+        try {
+          const data = fetchBibleApi_(ref, VERSE_TRANSLATION);
+          const text = cleanText_(data.text);
+          const verses = (data.verses || []).length;
+          if (text && verses >= 1 && verses <= 4 && text.length <= 600) {
+            sec.ref = cleanText_(data.reference) || ref;
+            sec.scripture = text;
+            usedRefs.push(sec.ref);
+          } else {
+            Logger.log("Skipped passage " + ref + " (" + verses + " verses, " + text.length + " chars)");
+          }
+        } catch (err) {
+          Logger.log("Skipped passage " + ref + ": " + err);
+        }
+      }
+      return sec;
+    });
+    // Same closing invitation every week.
+    outSections[outSections.length - 1].paragraphs.push(cfg.closingCta);
+    const titleHook = cleanText_(c.title_hook).replace(/[|"]+/g, "").slice(0, 100 - cfg.titleSuffix.length);
+    const script = {
+      format: cfg.eventFormat,
+      title: titleHook + cfg.titleSuffix,
+      thumbnail_text: cleanText_(c.thumbnail_text) || titleHook,
+      thumbnail_label: cfg.label,
+      description: cleanText_(c.description_intro) + "\n\n" + cfg.descriptionCta,
+      sections: outSections,
+    };
+    return { script: script, words: words, refs: usedRefs, titleHook: titleHook };
+  }
+  throw new Error("Could not write a usable long-form script after 3 attempts: " + problem);
+}
+
+function rememberLongScript_(format, result) {
+  const props = PropertiesService.getScriptProperties();
+  const refs = result.refs.concat(JSON.parse(props.getProperty("long_" + format + "_recent_refs") || "[]"));
+  const titles = [result.titleHook].concat(JSON.parse(props.getProperty("long_" + format + "_recent_titles") || "[]"));
+  props.setProperty("long_" + format + "_recent_refs", JSON.stringify(refs.slice(0, 40)));
+  props.setProperty("long_" + format + "_recent_titles", JSON.stringify(titles.slice(0, 12)));
+}
+
+function startLongRender_(format) {
+  const result = generateLongScript_(format);
+  Logger.log("Script: " + result.script.title + " (" + result.words + " words; passages: " +
+    (result.refs.join("; ") || "none") + ")");
+  const status = startPilotRender_({
+    script: JSON.stringify(result.script),
+    day_index: String(today_().daysSinceStart),
+  }, "create_long_prayer");
+  if (status !== "started") throw new Error("Long-form render not started: " + status);
+  rememberLongScript_(format, result);
+  return result;
+}
+
+// Weekly trigger target (Monday). Emails you if anything fails.
+function triggerLongMorningPrayer() {
+  try {
+    startLongRender_("morning");
+  } catch (err) {
+    notifyFailure_("Monday morning prayer video", err);
+  }
+}
+
+// Run once from the editor: adds the Monday trigger (and removes duplicates).
+function installLongMorningSchedule() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === "triggerLongMorningPrayer") ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger("triggerLongMorningPrayer").timeBased()
+    .onWeekDay(ScriptApp.WeekDay.MONDAY).atHour(4).inTimezone(TIMEZONE).create();
+  Logger.log("Monday trigger added: triggerLongMorningPrayer, between 4:00 and 5:00 (" + TIMEZONE + "). " +
+    "The approval email should arrive about 25-40 minutes after it runs.");
+}
+
+// Writes a script and logs it. Starts nothing, uploads nothing.
+function testLongMorningScript() {
+  const result = generateLongScript_("morning");
+  Logger.log(result.script.title + "\nThumbnail: " + result.script.thumbnail_text + "\nWords: " +
+    result.words + "\nPassages: " + (result.refs.join("; ") || "none") + "\n\n" +
+    JSON.stringify(result.script, null, 2));
+}
+
+// Full test: render, PRIVATE upload, approval email (about 25-40 minutes).
+function testLongMorningRender() {
+  const result = startLongRender_("morning");
+  Logger.log("Render started for: " + result.script.title + ". The approval email should arrive in about " +
+    "25-40 minutes. Nothing is public until you approve.");
 }
